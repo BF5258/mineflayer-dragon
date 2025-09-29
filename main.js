@@ -31,8 +31,8 @@ bot.loadPlugin(minecrafthawkeye.default);
 bot.loadPlugin(mineflayerPvP.plugin);
 
 bot.once('spawn', function() {
-    bot.chat('Spawned! Say go when ready.');
-    bot.chat("Warning: this bot uses modifications to minecraftHalkEye and patch-package isn't working");
+    //bot.chat('Spawned! Say go when ready.');
+    //bot.chat("Warning: this bot uses modifications to minecraftHalkEye and patch-package isn't working");
 })
 
 /** @typedef {number} EntityId */
@@ -147,14 +147,14 @@ function setPhase(phase) {
 function setLocation(location) {
     if (!currentMode) return;
     currentMode.location = location;
-    bot.chat("moving " + location);
+    //bot.chat("moving " + location);
     updateGoal();
 }
 function setAction(action) {
     if (!currentMode) return;
     const previousAction = currentMode.action;
     currentMode.action = action;
-    bot.chat("action: " + action);
+    //bot.chat("action: " + action);
     if (previousAction != 'walking' && action == 'walking') {
         // bows slow our movement and mineflayer-pvp sets its own goals
         stopAttacking();
@@ -275,7 +275,7 @@ function beginDestroyCrystal() {
     if (!isThereCrystal || currentMode.action != 'attacking') return;
     const target = crystals[currentTarget]?.entity;
     if (!target) return console.error()
-    bot.chat("Attacking crystal: " + currentTarget)
+    //bot.chat("Attacking crystal: " + currentTarget)
     bot.hawkEye.oneShot(target, "bow");
 }
 
@@ -285,7 +285,7 @@ function nextCrystal() {
         if (crystals[currentTarget]?.entity) return true;
     }
     
-    bot.chat("All crytals I can see have been destroyed.");
+    //bot.chat("All crytals I can see have been destroyed.");
     setPhase('attackDragon');
     return false;
 }
@@ -298,7 +298,7 @@ function attackDragon() {
         startHittingDragon();
         return;
     } else {
-        bot.chat("DOTO: use bow on dragon")
+        //bot.chat("DOTO: use bow on dragon")
         // minecraftHawkEye currenly cannot hit the dragon.
         // If this is fixed we should attack the dragon with a bow.
         // bot.hawkEye.autoAttack(dragon);
@@ -331,7 +331,7 @@ bot.on('entityGone', (entity) => {
         case "dragon_fireball": clearFireBall(entity); break;
         case "area_effect_cloud": breaths.delete(entity); break;
         case "end_crystal": removeEndCrystalEntity(entity); break;
-        case "ender_dragon": bot.chat("Did we win?"); break;
+        //case "ender_dragon": bot.chat("Did we win?"); break;
     }
     //console.log("gone:", entity);
 });
@@ -357,7 +357,7 @@ bot.on("entityUpdate", entity => {
         // Theses states have no partical or audio cue. Listening to them seems like cheating.
         // HOLDING_PATTERN, STRAFE_PLAYER, LANDING_APPROACH, TAKEOFF, CHARGING_PLAYER.
         case LANDING_APPROACH: onDragonPerch(); return;
-        case CHARGING_PLAYER: bot.chat("oops"); // Intended fall-through
+        case CHARGING_PLAYER: //bot.chat("oops"); // Intended fall-through
         case TAKEOFF: onTakeOff(); return;
     }
 });
@@ -417,7 +417,7 @@ function beginDragonFight() {
     // Look down, not at enderman
     bot.look(bot.entity.yaw, Math.PI);
     if (currentMode) {
-        bot.chat("I am already fighting the dragon.");
+        //bot.chat("I am already fighting the dragon.");
         return;
     }
     const world = bot.world;
@@ -428,12 +428,12 @@ function beginDragonFight() {
         (block) => block.name == "bedrock"
     )
     if (!topOfFountain) {
-        bot.chat("I cannot see the exit portal. I will try to get closer before initialisation.");
+        //bot.chat("I cannot see the exit portal. I will try to get closer before initialisation.");
         bot.pathfinder.setGoal(goalNearFountain);
         bot.once('goal_reached', beginDragonFight);
         return;
     }
-    bot.chat("Starting dragon fight.");
+    //bot.chat("Starting dragon fight.");
     goalInFountain = new GoalInFountain(topOfFountain.position.y - 3);
     currentMode = {
         phase: 'destroyCrystals',
