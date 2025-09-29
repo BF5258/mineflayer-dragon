@@ -3,9 +3,16 @@ import { createBot } from 'mineflayer';
 import pkg from 'mineflayer-pathfinder';
 const { pathfinder, Movements, goals } = pkg;
 import minecrafthawkeye from 'minecrafthawkeye';
+import mineflayerPvP from 'mineflayer-pvp';
 import minecraftData from 'minecraft-data';
 const mcData = minecraftData('1.21.8');
 import { Vec3 } from "vec3";
+
+/**
+ * Shoutout to mineflayer, minecraftHawkEye, Fabric, and SniffCraft!
+ * I wouldn't have been able to make this without them.
+ */
+
 
 /**
  * @typedef {require('prismarine-entity').Entity} Entity
@@ -21,9 +28,11 @@ const bot = createBot({
 
 bot.loadPlugin(pathfinder);
 bot.loadPlugin(minecrafthawkeye.default);
+bot.loadPlugin(mineflayerPvP.plugin);
 
-bot.on('spawn', function() {
+bot.once('spawn', function() {
     bot.chat('Spawned! Say go when ready.');
+    bot.chat("Warning: this bot uses modifications to minecraftHalkEye and patch-package isn't working");
 })
 
 /** @typedef {number} EntityId */
@@ -60,7 +69,8 @@ const spikeCoordinates = [
 /* crystal coordinates = [x+0.5, y+1, z+0.5] */
 
 const crystals = new Array(10);
-const dragon = new Set();
+/** @type {Entity} */
+let dragon;
 /** The velocity of entities is unknow until they have moved.
  * (The information is given in the add_entity packet but mineflayer does us it.)
  * @type {Set<Entity>} */
@@ -70,6 +80,8 @@ const fireballs = new Map();
 const breaths = new Set();
 const endermans = new Set();
 
+// I don't think this is needed.
+// 'entitySpawn' is emited for all entities upon entering the end.
 //function classifyAllEntities() {
 //    const ids = Object.keys(bot.entities)
 //    for (let i=0, n=ids.length; i<n; i++) {
@@ -108,6 +120,8 @@ bot.on('entityMoved', (entity) => {
     }
 })
 
+// I assumed area effect clouds damage all entities inside their bounding box.
+// Is this assumption correct or is Euclidean distance used?
 function chebyshevDistance(v1, v2) {
     return Math.max(...v1.minus(v2).abs().toArray());
 }
@@ -115,12 +129,39 @@ function chebyshevDistance(v1, v2) {
 /*  */
 const safeFireBallDistance = 10;
 
-/** 
- * These are probably poorly named as their use changes as improvements are made.
- * They are named after their original purpose. The current purpose is somehow related.
- * @type {'destroyCrystals' | 'escapeBreath' | 'dragonPerched' | 'idle'}
+// Current mode -----------------------------------------------------
+
+/**
+ * @type {?Object} currentMode
+ * @type {'destroyCrystals' | 'attackDragon'} currentMode.phase
+ * @type {'in' | 'out'} currentMode.location
+ * @type {'walking' | 'waiting' | 'attacking'} currentMode.action
  */
-var currentMode = 'idle';
+var currentMode = null;
+
+function setPhase(phase) {
+    if (!currentMode) return;
+    stopAttacking();
+    currentMode.phase = phase;
+}
+function setLocation(location) {
+    if (!currentMode) return;
+    currentMode.location = location;
+    bot.chat("moving " + location);
+    updateGoal();
+}
+function setAction(action) {
+    if (!currentMode) return;
+    const previousAction = currentMode.action;
+    currentMode.action = action;
+    bot.chat("action: " + action);
+    if (previousAction != 'walking' && action == 'walking') {
+        // bows slow our movement and mineflayer-pvp sets its own goals
+        stopAttacking();
+    } else if (previousAction == 'walking' && action == 'attacking') {
+        resumeAttacking();
+    }
+}
 
 /**
  * 
@@ -140,8 +181,9 @@ function evaluateFireBall(entity) {
         predictedTime
     });
     const distance = chebyshevDistance(predictedImpact, bot.entity.position);
-    if (distance < safeFireBallDistance && currentMode != 'idle') {
-        setMode('escapeBreath');
+    if (distance < safeFireBallDistance && currentMode) {
+        console.log("escaping fireball");
+        updateGoal();
     }
     //if (predictedImpact)
     unevaluatedFireBalls.delete(entity);
@@ -159,15 +201,10 @@ function clearFireBall(entity) {
  */
 
 /**
- * Three circles
- * inside fountain
- * far enough to not get fireball in fountain
- * close enough to reach fountain before perch
+ * Stay within a disk or annulus around the fountain
+ * inside fountain or
+ * far enough to not get fireball in fountain and close enough to reach fountain before perch
  */
-
-const inFountainGoal = new goals.GoalNearXZ(0.5, 0.5, 3);
-const outsideFountainGoal = new goals.GoalInvert(new goals.GoalNear(0, 0, safeFireBallDistance));
-
 class GoalInFountain extends goals.GoalBlock {
     constructor(portalYLevel) { super(0,portalYLevel,0); }
     isEnd(node) {
@@ -190,24 +227,11 @@ class GoalNearFountain extends goals.Goal {
         return distanceSq >= this.minSq && distanceSq <= this.maxSq;
     }
 }
-//
-//
-//function onEventUnlessInterupted(event, listener) {
-//    function removeEventListeners() {
-//        bot.removeListener('goal_reached', onGoalReached);
-//        bot.removeListener('mode_changed', onModeChange);
-//    }
-//    function onGoalReached() {
-//        removeEventListeners();
-//    }
-//    function onModeChanged() {
-//        removeEventListeners();
-//    }
-//    bot.on('goal_reached', onGoalReached);
-//    bot.on('mode_changed', onModeChanged);
-//}
+/** @type {GoalInFountain} */
+let goalInFountain;
+const goalNearFountain = new GoalNearFountain(10, 20);
 
-function escapeFireBalls() {
+function updateGoal() {
     let breathGoals = [];
     breaths.forEach((breath) => {
         const p = breath.position;
@@ -219,14 +243,78 @@ function escapeFireBalls() {
     });
     const toCloseToBreath = new goals.GoalCompositeAny(breathGoals);
     const safeFromBreath = new goals.GoalInvert(toCloseToBreath);
-    const safeAnNearFountain = new goals.GoalCompositeAll([safeFromBreath, goalNearFountain]);
-    // We can't move while using a bow
-    bot.hawkEye.stop();
+    const targetLocation = currentMode.location == 'in' ? goalInFountain : goalNearFountain;
+    const safeAnNearFountain = new goals.GoalCompositeAll([safeFromBreath, targetLocation]);
+    setAction('walking');
     bot.pathfinder.setGoal(safeAnNearFountain);
-    console.log("escaping fireball");
-    bot.once('goal_reached', () => {setMode('destroyCrystals');});
 }
-bot.on('mode_escapeBreath', escapeFireBalls);
+
+bot.on ('goal_reached', () => {
+    setAction('attacking');
+});
+
+function stopAttacking() {
+    switch (currentMode.phase) {
+        case 'destroyCrystals': bot.hawkEye.stop(false); return;
+        case 'attackDragon': stopAttackingDragon(); return;
+    }
+    // Look down to avoid enderman.
+    bot.look(bot.entity.yaw, Math.PI);
+}
+
+function resumeAttacking() {
+    switch (currentMode.phase) {
+        case 'destroyCrystals': beginDestroyCrystal(); return;
+        case 'attackDragon': attackDragon(); return;
+    }
+}
+
+function beginDestroyCrystal() {
+    const isThereCrystal = nextCrystal();
+    // Don't reload if waiting. We are about to move.
+    if (!isThereCrystal || currentMode.action != 'attacking') return;
+    const target = crystals[currentTarget]?.entity;
+    if (!target) return console.error()
+    bot.chat("Attacking crystal: " + currentTarget)
+    bot.hawkEye.oneShot(target, "bow");
+}
+
+function nextCrystal() {
+    for (var i=0; i<10; i++) {
+        currentTarget = (currentTarget+1) % 10;
+        if (crystals[currentTarget]?.entity) return true;
+    }
+    
+    bot.chat("All crytals I can see have been destroyed.");
+    setPhase('attackDragon');
+    return false;
+}
+
+bot.on('auto_shot_stopped', beginDestroyCrystal);
+
+
+function attackDragon() {
+    if (currentMode.location == 'in') {
+        startHittingDragon();
+        return;
+    } else {
+        bot.chat("DOTO: use bow on dragon")
+        // minecraftHawkEye currenly cannot hit the dragon.
+        // If this is fixed we should attack the dragon with a bow.
+        // bot.hawkEye.autoAttack(dragon);
+        return;
+    }
+}
+function stopAttackingDragon() {
+    if (currentMode.location == 'in') {
+        stopHittingDragon();
+        return;
+    } else {
+        // minecraftHawkEye currenly cannot hit the dragon.
+        return;
+    }
+}
+
 
 bot.on('entitySpawn', (entity) => {
     switch (entity.name) {
@@ -234,7 +322,7 @@ bot.on('entitySpawn', (entity) => {
         case "dragon_fireball": unevaluatedFireBalls.add(entity); break;
         case "area_effect_cloud": breaths.add(entity); break;
         case "end_crystal": classifyCrystal(entity); break;
-        case "ender_dragon": dragon.add(entity); break;
+        case "ender_dragon": dragon = entity; break;
     }
 });
 bot.on('entityGone', (entity) => {
@@ -243,7 +331,7 @@ bot.on('entityGone', (entity) => {
         case "dragon_fireball": clearFireBall(entity); break;
         case "area_effect_cloud": breaths.delete(entity); break;
         case "end_crystal": removeEndCrystalEntity(entity); break;
-        case "ender_dragon": dragon.delete(entity); break;
+        case "ender_dragon": bot.chat("Did we win?"); break;
     }
     //console.log("gone:", entity);
 });
@@ -264,99 +352,74 @@ const HOVER = 10;
 const dragonPhaseIndex = 16;
 
 bot.on("entityUpdate", entity => {
-    if (!dragon.has(entity) || currentMode == 'idle') return;
+    if (dragon != entity || !currentMode == 'idle') return;
     switch(entity.metadata[dragonPhaseIndex]) {
         // Theses states have no partical or audio cue. Listening to them seems like cheating.
         // HOLDING_PATTERN, STRAFE_PLAYER, LANDING_APPROACH, TAKEOFF, CHARGING_PLAYER.
-        case LANDING_APPROACH:
-            setMode('dragonPerched');
-            break;
-        case CHARGING_PLAYER:
-            bot.chat("oops");
-        case TAKEOFF:
-            // Without a timeout the bot will jump into the dragon before the path is clear.
-            setTimeout(() => {setMode('escapeBreath')}, 1000);
-            
+        case LANDING_APPROACH: onDragonPerch(); return;
+        case CHARGING_PLAYER: bot.chat("oops"); // Intended fall-through
+        case TAKEOFF: onTakeOff(); return;
     }
 });
 
-//health = 20
-//maxHealth = 20
-//avoidDangerMultiplier = maxhealth/health
-//
-//currentTarget = 0;
-/**
- * 
- * @param {currentMode} mode 
- * @returns 
- */
-function setMode(mode) {
-    if (mode == currentMode) return;
-    else currentMode = mode;
-    bot.emit('mode_changed');
-    bot.emit('mode_' + mode);
+function onTakeOff() {
+    // Prepare to move but don't move yet
+    // Otherwise the bot will imediatly jump up and get hit by the dragon
+    setAction('wait');
+    setTimeout(onTakenOff, 2000);
 }
 
-function waitForMode(mode) {
-    return new Promise ((resolve) => {
-        if (mode == currentMode) return resolve();
-        bot.on('mode_' + mode, resolve);
-    });
+function onTakenOff() {
+    setLocation('out');
 }
 
-async function destroyCrystals() {
-    bot.chat("Destroying end crystals.");
-    let crystalsDestroyed = 0;
-    while (crystalsDestroyed < 10) {
-        crystalsDestroyed = 0;
-        for (let i=0; i<10; i++) {
-            let target = crystals[i]?.entity;
-            if (!target) {
-                // TODO: Was the crystal destroyed or just unrendered?
-                crystalsDestroyed += 1;
-                continue;
-            }
-            await fireAtTarget(crystals[i]?.entity);
-        }
-    }
-    bot.chat("Crystals destroyed.");
-}
-
-async function fireAtTarget(target) {
-    let successful;
-    const interuption = () => {successful = false}
-    bot.on('mode_changed', interuption);
-    do {
-        await waitForMode ('destroyCrystals');
-        bot.hawkEye.oneShot(target, "bow");
-        successful = true;
-        await new Promise ((resolve) => bot.once('auto_shot_stopped', resolve));
-    } while (!successful);
-    bot.removeListener('mode_changed', interuption);
-}
-
-let goalInFountain;
-const goalNearFountain = new GoalNearFountain(10, 20);
+let currentTarget = 0;
 
 function onDragonPerch() {
-    bot.pathfinder.setGoal(goalInFountain);
-    
+    setLocation('in');
 }
-bot.on('mode_dragonPerched', onDragonPerch);
 
 bot.on('chat', (username, message) => {
     if (username == bot.username) return;
     switch (message) {
         case "go": beginDragonFight(); return;
-        case "destroy the crystals": destroyCrystals(); return;
-        case "in": bot.pathfinder.setGoal(goalInFountain); return;
-        case "out": bot.pathfinder.setGoal(goalNearFountain); return;
-        case "test": bot.pathfinder.setGoal(new goals.GoalBlock(1,62,0)); return;
-        case "hello": bot.chat("Hi"); return;
+        case "attack": attackDragon();
+        case "in": setLocation('in');
     } 
 });
 
+let hitDragonInterval;
+
+function startHittingDragon() {
+    // Unfortunately mineflayer doesn't support EnderDragonParts. :(
+    // bot.pvp.attack(dragon);
+    
+    // TODO equip the highest dps when and determine attack speed.
+    const sword = bot.inventory.findInventoryItem("iron_sword");
+    if (sword) bot.equip(sword);
+    const attackSpeed = 1.6;
+    const attackInterval = 1000/attackSpeed + 50;
+    hitDragonInterval = setInterval(hitDragon, attackInterval);
+}
+function stopHittingDragon() {
+    clearInterval(hitDragonInterval);
+}
+
+function hitDragon() {
+    bot._client.write('use_entity', {
+        target: dragon.id + 1, // +1 for head
+        mouse: 1,
+        sneaking: false
+    });
+}
+
 function beginDragonFight() {
+    // Look down, not at enderman
+    bot.look(bot.entity.yaw, Math.PI);
+    if (currentMode) {
+        bot.chat("I am already fighting the dragon.");
+        return;
+    }
     const world = bot.world;
     const topOfFountain = world.raycast(
         new Vec3(0,100,0),
@@ -365,42 +428,22 @@ function beginDragonFight() {
         (block) => block.name == "bedrock"
     )
     if (!topOfFountain) {
-        bot.chat("I cannot see the exit portal.");
-        return console.error("Cannot locate end exit portal.");
+        bot.chat("I cannot see the exit portal. I will try to get closer before initialisation.");
+        bot.pathfinder.setGoal(goalNearFountain);
+        bot.once('goal_reached', beginDragonFight);
+        return;
     }
+    bot.chat("Starting dragon fight.");
     goalInFountain = new GoalInFountain(topOfFountain.position.y - 3);
-    destroyCrystals();
-    setMode("escapeBreath");
+    currentMode = {
+        phase: 'destroyCrystals',
+        weapon: 'bow',
+        location: 'out',
+        action: 'walking'
+    }
+    updateGoal();
 }
 
-//class SafetyGoal extends goals.Goal {
-//    
-//    /**
-//     * 
-//     * @param {Move} node 
-//     */
-//    heuristic(node) {
-//        
-//    }
-//    /**
-//     * 
-//     * @param {Move} node 
-//     */
-//	isEnd(node) {
-//        
-//    }
-//    /**
-//     * 
-//     * @returns boolean
-//     */
-//	hasChanged() {
-//        return true; 
-//    }
-//	//public isValid(): boolean;
-//    
-//    currentPriority;
-//    
-//}
 
 /**
  * When the dragon is SITTING_SCANNING it will enter TAKEOFF or CHARGING_PLAYER
