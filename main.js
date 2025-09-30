@@ -10,7 +10,7 @@ import { Vec3 } from "vec3";
 
 /**
  * Shoutout to mineflayer, minecraftHawkEye, Fabric, and SniffCraft!
- * I wouldn't have been able to make this without them.
+ * This wouldn't exist without them.
  */
 
 
@@ -31,8 +31,8 @@ bot.loadPlugin(minecrafthawkeye.default);
 bot.loadPlugin(mineflayerPvP.plugin);
 
 bot.once('spawn', function() {
+    // All the chat messages are commented out due to issue #609.
     //bot.chat('Spawned! Say go when ready.');
-    //bot.chat("Warning: this bot uses modifications to minecraftHalkEye and patch-package isn't working");
 })
 
 /** @typedef {number} EntityId */
@@ -89,6 +89,14 @@ const endermans = new Set();
 //    }
 //}
 
+/**
+ * This is more complicated than needed.
+ * When it was written I thought the caged crystals
+ * would need to be taken out manually
+ * but minecraftHawkEye has good enough aim to hit them.
+ * I chose to leave this because targeting the crystals
+ * in order looks more natural than randomly jumping between them.
+ */
 function classifyCrystal(entity) {
     const position = entity.position;
     const x = position.x-0.5;
@@ -143,6 +151,7 @@ function setPhase(phase) {
     if (!currentMode) return;
     stopAttacking();
     currentMode.phase = phase;
+    if (currentMode.action == 'attack') resumeAttacking();
 }
 function setLocation(location) {
     if (!currentMode) return;
@@ -182,7 +191,6 @@ function evaluateFireBall(entity) {
     });
     const distance = chebyshevDistance(predictedImpact, bot.entity.position);
     if (distance < safeFireBallDistance && currentMode) {
-        console.log("escaping fireball");
         updateGoal();
     }
     //if (predictedImpact)
@@ -254,12 +262,12 @@ bot.on ('goal_reached', () => {
 });
 
 function stopAttacking() {
+    // Look up to avoid enderman.
+    bot.look(bot.entity.yaw, Math.PI/2);
     switch (currentMode.phase) {
-        case 'destroyCrystals': bot.hawkEye.stop(false); return;
+        case 'destroyCrystals': abortShot(); return;
         case 'attackDragon': stopAttackingDragon(); return;
     }
-    // Look down to avoid enderman.
-    bot.look(bot.entity.yaw, Math.PI);
 }
 
 function resumeAttacking() {
@@ -270,9 +278,11 @@ function resumeAttacking() {
 }
 
 function beginDestroyCrystal() {
-    const isThereCrystal = nextCrystal();
     // Don't reload if waiting. We are about to move.
-    if (!isThereCrystal || currentMode.action != 'attacking') return;
+    if (currentMode.action != 'attacking') return;
+    // The dragon is likely obstructing our view and flaming arrows hurt.
+    if (dragonPhase == LANDING || dragonPhase >= 5 && dragonPhase <= 7) return;
+    if(!nextCrystal()) return;
     const target = crystals[currentTarget]?.entity;
     if (!target) return console.error()
     //bot.chat("Attacking crystal: " + currentTarget)
@@ -290,8 +300,19 @@ function nextCrystal() {
     return false;
 }
 
-bot.on('auto_shot_stopped', beginDestroyCrystal);
+let shouldIgnorNextEvent = false;
+bot.on('auto_shot_stopped', () => {
+    if (shouldIgnorNextEvent) {
+        shouldIgnorNextEvent = false;
+        return;
+    }
+    beginDestroyCrystal();
+});
 
+function abortShot() {
+    shouldIgnorNextEvent = true;
+    bot.hawkEye.stop();
+}
 
 function attackDragon() {
     if (currentMode.location == 'in') {
@@ -310,6 +331,7 @@ function stopAttackingDragon() {
         stopHittingDragon();
         return;
     } else {
+        abortShot();
         // minecraftHawkEye currenly cannot hit the dragon.
         return;
     }
@@ -350,15 +372,21 @@ const DYING = 9;
 const HOVER = 10;
 
 const dragonPhaseIndex = 16;
+let dragonPhase;
 
 bot.on("entityUpdate", entity => {
     if (dragon != entity || !currentMode == 'idle') return;
-    switch(entity.metadata[dragonPhaseIndex]) {
+    dragonPhase = entity.metadata[dragonPhaseIndex];
+    switch (dragonPhase) {
         // Theses states have no partical or audio cue. Listening to them seems like cheating.
         // HOLDING_PATTERN, STRAFE_PLAYER, LANDING_APPROACH, TAKEOFF, CHARGING_PLAYER.
-        case LANDING_APPROACH: onDragonPerch(); return;
+        case LANDING_APPROACH: setLocation('in'); return;
         case CHARGING_PLAYER: //bot.chat("oops"); // Intended fall-through
         case TAKEOFF: onTakeOff(); return;
+        case DYING:
+            setLocation('in');
+            stopAll();
+            bot.chat("The end is free!");
     }
 });
 
@@ -366,40 +394,36 @@ function onTakeOff() {
     // Prepare to move but don't move yet
     // Otherwise the bot will imediatly jump up and get hit by the dragon
     setAction('wait');
-    setTimeout(onTakenOff, 2000);
-}
-
-function onTakenOff() {
-    setLocation('out');
+    setTimeout(setLocation, 2000, 'out');
 }
 
 let currentTarget = 0;
-
-function onDragonPerch() {
-    setLocation('in');
-}
 
 bot.on('chat', (username, message) => {
     if (username == bot.username) return;
     switch (message) {
         case "go": beginDragonFight(); return;
-        case "attack": attackDragon();
-        case "in": setLocation('in');
+        case "stop": stopAll(); return;
     } 
 });
+
+function stopAll() {
+    if (!currentMode) return;
+    stopAttacking();
+    currentMode = null;
+}
 
 let hitDragonInterval;
 
 function startHittingDragon() {
-    // Unfortunately mineflayer doesn't support EnderDragonParts. :(
-    // bot.pvp.attack(dragon);
-    
     // TODO equip the highest dps when and determine attack speed.
     const sword = bot.inventory.findInventoryItem("iron_sword");
     if (sword) bot.equip(sword);
     const attackSpeed = 1.6;
     const attackInterval = 1000/attackSpeed + 50;
     hitDragonInterval = setInterval(hitDragon, attackInterval);
+    // TODO calculate where the head is so we can move closer to it
+    // if it is out of range.
 }
 function stopHittingDragon() {
     clearInterval(hitDragonInterval);
@@ -414,8 +438,7 @@ function hitDragon() {
 }
 
 function beginDragonFight() {
-    // Look down, not at enderman
-    bot.look(bot.entity.yaw, Math.PI);
+    bot.look(bot.entity.yaw, Math.PI/2);
     if (currentMode) {
         //bot.chat("I am already fighting the dragon.");
         return;
@@ -429,7 +452,7 @@ function beginDragonFight() {
     )
     if (!topOfFountain) {
         //bot.chat("I cannot see the exit portal. I will try to get closer before initialisation.");
-        bot.pathfinder.setGoal(goalNearFountain);
+        bot.pathfinder.setGoal(new goals.GoalNearXZ(0, 0, 30));
         bot.once('goal_reached', beginDragonFight);
         return;
     }
