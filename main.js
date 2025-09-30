@@ -353,7 +353,7 @@ bot.on('entityGone', (entity) => {
         case "dragon_fireball": clearFireBall(entity); break;
         case "area_effect_cloud": breaths.delete(entity); break;
         case "end_crystal": removeEndCrystalEntity(entity); break;
-        //case "ender_dragon": bot.chat("Did we win?"); break;
+        case "ender_dragon": if (entity == dragon) dragon=null; break;
     }
     //console.log("gone:", entity);
 });
